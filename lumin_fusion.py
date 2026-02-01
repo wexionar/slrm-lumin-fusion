@@ -1,5 +1,5 @@
 # =============================================================
-# LUMIN-FUSION — Lumin Fusion Core Engine
+# LUMIN-FUSION — Origin & Resolution Engine
 # =============================================================
 # Project Lead: Alex Kinetic
 # AI Collaboration: Gemini · ChatGPT · Claude · Grok · Meta AI
@@ -7,36 +7,51 @@
 # =============================================================
 
 """
-LuminCore Engine - Motor de Compresión Lógica
-=============================================
-Versión limpia: solo motor + tests.
+Lumin Fusion Engine
+====================
+Logical compression engine for high-dimensional regression.
 
-Correcciones aplicadas:
-  1. Último sector nunca se cerraba → se cierra al finalizar ingest.
-  2. Puntos fuera de todos los bounding boxes retornaban NaN → fallback
-     al sector más cercano por distancia al centroide.
-  3. Solapamiento de bounding boxes → cuando un punto cae en varios
-     sectores, se selecciona el que tiene menor error de predicción.
+Architecture:
+  - Normalizer      : Normalizes input data into a controlled range.
+  - LuminOrigin     : Ingests normalized data point by point, building
+                      sectors. Each sector encapsulates a local linear
+                      law (W, B) that explains its points within epsilon.
+                      When a point cannot be explained, the sector splits
+                      (mitosis) and a new one begins.
+  - LuminResolution : Inference engine. Given a point, finds the correct
+                      sector and applies its local law to predict Y.
+  - LuminPipeline   : Orchestrates the full flow: normalization ->
+                      ingestion -> resolution. Main interface.
+
+Fixes applied:
+  1. Last sector was never closed -> closed via finalize() after ingestion.
+  2. Points outside all bounding boxes returned NaN -> fallback to nearest
+     sector by centroid distance.
+  3. Bounding box overlap -> resolved by selecting the sector with smallest
+     volume (most geometrically specific). Degenerate sectors with near-zero
+     ranges are clamped to prevent them from always winning.
+  4. X normalization in predict() no longer uses a dummy Y column.
+  5. Input shape validation added to predict().
 """
 
 import numpy as np
 
 
 # =============================================================
-# NORMALIZACIÓN
+# NORMALIZER
 # =============================================================
 class Normalizer:
     """
-    Tipos soportados:
-      - 'symmetric_minmax' : rango [-1, 1] usando min y max por columna.
-      - 'symmetric_maxabs' : rango [-1, 1] usando max(abs) por columna.
-      - 'direct'           : rango [0, 1] usando min y max por columna.
+    Supported types:
+      - 'symmetric_minmax' : range [-1, 1] using min and max per column.
+      - 'symmetric_maxabs' : range [-1, 1] using max(abs) per column.
+      - 'direct'           : range [0, 1] using min and max per column.
     """
     VALID_TYPES = ('symmetric_minmax', 'symmetric_maxabs', 'direct')
 
     def __init__(self, norm_type='symmetric_minmax'):
         if norm_type not in self.VALID_TYPES:
-            raise ValueError(f"norm_type debe ser uno de {self.VALID_TYPES}")
+            raise ValueError(f"norm_type must be one of {self.VALID_TYPES}")
         self.norm_type = norm_type
         self.s_min = None
         self.s_max = None
@@ -44,18 +59,18 @@ class Normalizer:
         self.s_maxabs = None
 
     def fit(self, data):
-        """Calcula los parámetros de normalización a partir de los datos."""
+        """Computes normalization parameters from data."""
         self.s_min = data.min(axis=0)
         self.s_max = data.max(axis=0)
         self.s_range = self.s_max - self.s_min
-        # Evitar división por cero en columnas constantes
+        # Prevent division by zero on constant columns
         self.s_range = np.where(self.s_range == 0, 1e-9, self.s_range)
         if self.norm_type == 'symmetric_maxabs':
             self.s_maxabs = np.max(np.abs(data), axis=0)
             self.s_maxabs = np.where(self.s_maxabs == 0, 1e-9, self.s_maxabs)
 
     def transform(self, data):
-        """Normaliza los datos según el tipo configurado."""
+        """Normalizes full data (X + Y) according to the configured type."""
         if self.norm_type == 'symmetric_minmax':
             return 2 * (data - self.s_min) / self.s_range - 1
         elif self.norm_type == 'symmetric_maxabs':
@@ -63,8 +78,20 @@ class Normalizer:
         else:  # direct
             return (data - self.s_min) / self.s_range
 
+    def transform_x(self, X):
+        """
+        Normalizes only X columns (excludes Y).
+        Uses the first D parameters fitted on the full dataset (X + Y).
+        """
+        if self.norm_type == 'symmetric_minmax':
+            return 2 * (X - self.s_min[:-1]) / self.s_range[:-1] - 1
+        elif self.norm_type == 'symmetric_maxabs':
+            return X / self.s_maxabs[:-1]
+        else:  # direct
+            return (X - self.s_min[:-1]) / self.s_range[:-1]
+
     def inverse_transform_y(self, y_norm):
-        """Desnormaliza solo la columna Y (última columna)."""
+        """Denormalizes Y values (last column) back to original scale."""
         if self.norm_type == 'symmetric_minmax':
             return (y_norm + 1) * self.s_range[-1] / 2 + self.s_min[-1]
         elif self.norm_type == 'symmetric_maxabs':
@@ -74,30 +101,30 @@ class Normalizer:
 
 
 # =============================================================
-# ORIGIN - Motor de Ingestion y Compresión
+# ORIGIN — Ingestion & Compression Engine
 # =============================================================
 class LuminOrigin:
     """
-    Ingesta datos normalizados punto a punto.
-    Construye sectores donde cada uno contiene una ley lineal local (W, B)
-    que explica sus puntos dentro de un margen epsilon.
+    Ingests normalized data point by point.
+    Builds sectors where each one contains a local linear law (W, B)
+    that explains its points within an epsilon margin.
 
-    Parámetros:
-      epsilon_val  : valor numérico de epsilon (0 a 1).
-      epsilon_type : 'absolute' o 'relative'.
-      mode         : 'diversity' (retiene ruido) o 'purity' (lo elimina).
+    Parameters:
+      epsilon_val  : numeric epsilon value (0 to 1).
+      epsilon_type : 'absolute' or 'relative'.
+      mode         : 'diversity' (retains noise) or 'purity' (eliminates it).
     """
     def __init__(self, epsilon_val=0.02, epsilon_type='absolute', mode='diversity'):
         self.epsilon_val = epsilon_val
         self.epsilon_type = epsilon_type
         self.mode = mode
-        self.sectors = []          # sectores cerrados [min, max, W, B]
-        self._current_nodes = []   # nodos del sector en construcción
-        self.D = None              # dimensionalidad de X
+        self.sectors = []          # closed sectors [min, max, W, B]
+        self._current_nodes = []   # nodes of the sector being built
+        self.D = None              # dimensionality of X
 
     def _calculate_law(self, nodes):
-        """Calcula W, B por mínimos cuadrados sobre los nodos dados.
-        Necesita mínimo D+1 nodos para un sistema determinado."""
+        """Computes W, B via least squares over the given nodes.
+        Requires minimum D+1 nodes for a determined system."""
         if len(nodes) < 2:
             return None, None
         nodes_np = np.array(nodes)
@@ -110,14 +137,14 @@ class LuminOrigin:
             return None, None
 
     def _get_threshold(self, y_real):
-        """Retorna el umbral de error según el tipo de epsilon."""
+        """Returns the error threshold based on epsilon type."""
         if self.epsilon_type == 'relative':
             return abs(y_real) * self.epsilon_val
         return self.epsilon_val
 
     def _close_sector(self):
-        """Cierra el sector actual y lo agrega a la lista de sectores.
-        Solo cierra si tiene suficientes nodos (D+1 mínimo)."""
+        """Closes the current sector and appends it to the sector list.
+        Only closes if it has enough nodes (D+1 minimum)."""
         min_nodes = (self.D + 1) if self.D else 2
         if len(self._current_nodes) < min_nodes:
             return
@@ -125,33 +152,33 @@ class LuminOrigin:
         W, B = self._calculate_law(self._current_nodes)
         if W is None:
             return
-        # Sector = [min por coordenada, max por coordenada, W, B]
+        # Sector layout: [min per coordinate, max per coordinate, W, B]
         sector = np.concatenate([
-            np.min(nodes[:, :-1], axis=0),   # min
-            np.max(nodes[:, :-1], axis=0),   # max
-            W,                                # pesos
-            [B]                               # sesgo
+            np.min(nodes[:, :-1], axis=0),   # bounding box min
+            np.max(nodes[:, :-1], axis=0),   # bounding box max
+            W,                                # weights
+            [B]                               # bias
         ])
         self.sectors.append(sector)
 
     def ingest(self, point):
         """
-        Ingesta un punto normalizado.
-        Si la ley lineal actual lo explica dentro de epsilon → lo agrega al sector.
-        Si no → cierra el sector actual (mitosis) y abre uno nuevo.
+        Ingests a single normalized point.
+        If the current local law explains it within epsilon -> add to sector.
+        If not -> close the current sector (mitosis) and start a new one.
 
-        CRÍTICO: lstsq necesita mínimo D+1 puntos para resolver un sistema
-        determinado en D dimensiones. Con menos puntos la predicción no es
-        confiable y no tiene sentido verificar epsilon.
+        CRITICAL: lstsq requires a minimum of D+1 points to solve a
+        determined system in D dimensions. With fewer points the prediction
+        is unreliable, so epsilon is not checked until we have enough nodes.
         """
         point = np.array(point, dtype=float)
         if self.D is None:
             self.D = len(point) - 1
 
         y_real = point[-1]
-        min_nodes = self.D + 1  # mínimo para sistema determinado
+        min_nodes = self.D + 1  # minimum for a determined system
 
-        # Hasta tener suficientes nodos, agregar sin verificar epsilon
+        # Until we have enough nodes, add without checking epsilon
         if len(self._current_nodes) < min_nodes:
             self._current_nodes.append(point.tolist())
             return
@@ -162,50 +189,55 @@ class LuminOrigin:
         threshold = self._get_threshold(y_real)
 
         if error <= threshold:
-            # El punto es explicado por la ley actual
+            # Point is explained by the current law
             self._current_nodes.append(point.tolist())
         else:
-            # MITOSIS: cerrar sector actual, abrir nuevo
+            # MITOSIS: close current sector, open a new one
             self._close_sector()
             if self.mode == 'diversity':
-                # Retiene los últimos D nodos como base del nuevo sector
-                # (necesitamos D nodos + el nuevo punto = D+1 para poder
-                # evaluar epsilon en el siguiente paso)
+                # Carry the last D nodes as base for the new sector.
+                # This gives us D nodes + the new point = D+1, enough to
+                # evaluate epsilon on the very next ingestion step.
                 self._current_nodes = self._current_nodes[-self.D:] + [point.tolist()]
             else:  # purity
-                # Empieza limpio
+                # Start clean with only the new point
                 self._current_nodes = [point.tolist()]
 
     def finalize(self):
         """
-        CORRECCIÓN 1: Cierra el último sector.
-        Debe llamarse después de ingerir todos los datos.
+        Closes the last sector.
+        Must be called after all data has been ingested.
         """
         self._close_sector()
         self._current_nodes = []
 
     def get_sectors(self):
-        """Retorna los sectores como array numpy."""
+        """Returns sectors as a numpy array."""
         if not self.sectors:
             return np.array([])
         return np.array(self.sectors)
 
 
 # =============================================================
-# RESOLUTION - Motor de Inferencia
+# RESOLUTION — Inference Engine
 # =============================================================
 class LuminResolution:
     """
-    Resuelve predicciones usando los sectores generados por Origin.
+    Resolves predictions using the sectors generated by Origin.
 
-    Correcciones aplicadas:
-      2. Fallback al sector más cercano cuando un punto no cae en ningún bounding box.
-      3. Cuando cae en varios sectores, selecciona el de menor error esperado.
+    Overlap strategy: when a point falls inside multiple bounding boxes,
+    the sector with the smallest volume is selected. Smaller volume means
+    the sector is geometrically more specific to that region of space.
+    Degenerate sectors (near-zero range on any axis) are clamped to
+    prevent numerical artifacts in log-volume computation.
+
+    Fallback: when a point falls outside all bounding boxes, the nearest
+    sector by centroid distance is used.
     """
     def __init__(self, sectors, D):
         """
-        sectors : array numpy de forma (N, 3*D + 1) con [min, max, W, B].
-        D       : dimensionalidad de X.
+        sectors : numpy array of shape (N, 3*D + 1) with [min, max, W, B].
+        D       : dimensionality of X.
         """
         self.D = D
         self.sectors = sectors
@@ -213,22 +245,22 @@ class LuminResolution:
         self.maxs = sectors[:, D:2*D]
         self.weights = sectors[:, 2*D:3*D]
         self.biases = sectors[:, -1]
-        # Centroide de cada sector (punto medio del bounding box)
+        # Centroid of each sector (midpoint of bounding box)
         self.centroids = (self.mins + self.maxs) / 2.0
 
     def _predict_with_sector(self, x, idx):
-        """Predicción usando un sector específico."""
+        """Prediction using a specific sector."""
         return np.dot(x, self.weights[idx]) + self.biases[idx]
 
     def resolve(self, X):
         """
-        Resuelve predicciones para un array de puntos X normalizados.
+        Resolves predictions for an array of normalized X points.
 
-        Lógica por punto:
-          1. Buscar todos los sectores donde el punto cae dentro del bounding box.
-          2. Si cae en varios → seleccionar el de menor error (consistencia).
-          3. Si no cae en ninguno → fallback al sector más cercano por distancia
-             al centroide (CORRECCIÓN 2, elimina NaN).
+        Logic per point:
+          1. Find all sectors where the point falls inside the bounding box.
+          2. If multiple -> select the one with smallest bounding box volume
+             (most geometrically specific).
+          3. If none -> fallback to nearest sector by centroid distance.
         """
         X = np.atleast_2d(X)
         n_points = X.shape[0]
@@ -237,7 +269,7 @@ class LuminResolution:
         for i in range(n_points):
             x = X[i]
 
-            # Buscar sectores que contienen este punto (dentro del bounding box)
+            # Find sectors that contain this point (inside bounding box)
             inside_mask = np.all(
                 (x >= self.mins - 1e-9) & (x <= self.maxs + 1e-9),
                 axis=1
@@ -245,23 +277,25 @@ class LuminResolution:
             candidates = np.where(inside_mask)[0]
 
             if len(candidates) == 1:
-                # Caso simple: un solo sector lo contiene
+                # Simple case: exactly one sector contains the point
                 results[i] = self._predict_with_sector(x, candidates[0])
 
             elif len(candidates) > 1:
-                # CORRECCIÓN 3: Solapamiento → seleccionar el sector más
-                # específico (menor volumen de bounding box). El sector más
-                # pequeño que contiene al punto es el más ajustado geométricamente.
-                # En alta dimensionalidad usamos log-volumen para estabilidad numérica.
-                ranges = self.maxs[candidates] - self.mins[candidates]
-                # Usar suma de log(range) como proxy de log-volumen
-                log_volumes = np.sum(np.log(ranges + 1e-30), axis=1)
+                # Overlap: select the sector with smallest bounding box volume.
+                # Clamp ranges to 1e-6 to prevent degenerate sectors
+                # (near-zero range) from collapsing log-volume to -inf
+                # and always winning the selection.
+                ranges = np.clip(
+                    self.maxs[candidates] - self.mins[candidates],
+                    1e-6, None
+                )
+                log_volumes = np.sum(np.log(ranges), axis=1)
                 best = candidates[np.argmin(log_volumes)]
                 results[i] = self._predict_with_sector(x, best)
 
             else:
-                # CORRECCIÓN 2: Punto fuera de todos los bounding boxes.
-                # Fallback al sector más cercano por distancia al centroide.
+                # Fallback: point outside all bounding boxes.
+                # Use the nearest sector by centroid distance.
                 distances = np.linalg.norm(self.centroids - x, axis=1)
                 nearest = np.argmin(distances)
                 results[i] = self._predict_with_sector(x, nearest)
@@ -270,34 +304,58 @@ class LuminResolution:
 
 
 # =============================================================
-# PIPELINE COMPLETO
+# PIPELINE
 # =============================================================
 class LuminPipeline:
     """
-    Orquesta el flujo completo: normalización → ingestion → resolución.
-    Interfaz principal para usar el motor.
+    Orchestrates the full flow: normalization -> ingestion -> resolution.
+    Main interface for the engine.
+
+    Parameters:
+      epsilon_val  : numeric epsilon value (0 to 1).
+      epsilon_type : 'absolute' or 'relative'.
+      mode         : 'diversity' (retains noise) or 'purity' (eliminates it).
+      norm_type    : normalization type ('symmetric_minmax', 'symmetric_maxabs', 'direct').
+      sort_input   : if True, sorts normalized data by Euclidean distance from
+                     the origin before ingestion. This makes the model fully
+                     reproducible: same dataset always produces the same sectors,
+                     regardless of the original row order.
+                     If False, preserves the original input order, which may
+                     produce different sector layouts depending on data arrival.
+                     Default: True.
     """
     def __init__(self, epsilon_val=0.02, epsilon_type='absolute',
-                 mode='diversity', norm_type='symmetric_minmax'):
+                 mode='diversity', norm_type='symmetric_minmax',
+                 sort_input=True):
         self.normalizer = Normalizer(norm_type)
         self.epsilon_val = epsilon_val
         self.epsilon_type = epsilon_type
         self.mode = mode
+        self.sort_input = sort_input
         self.origin = None
         self.resolution = None
         self.D = None
 
     def fit(self, data):
         """
-        Entrena el motor completo.
-        data : array numpy de forma (N, D+1) donde la última columna es Y.
+        Trains the full engine.
+        data : numpy array of shape (N, D+1) where the last column is Y.
         """
-        # Normalizar
+        # Normalize
         self.normalizer.fit(data)
         data_norm = self.normalizer.transform(data)
         self.D = data.shape[1] - 1
 
-        # Ingerir
+        # Sort by Euclidean distance from origin if enabled.
+        # This makes the ingestion order deterministic regardless of how
+        # the original dataset was ordered. Cost: O(N log N), negligible
+        # compared to the ingestion loop itself.
+        if self.sort_input:
+            distances = np.linalg.norm(data_norm[:, :-1], axis=1)
+            sort_indices = np.argsort(distances)
+            data_norm = data_norm[sort_indices]
+
+        # Ingest
         self.origin = LuminOrigin(
             epsilon_val=self.epsilon_val,
             epsilon_type=self.epsilon_type,
@@ -305,32 +363,37 @@ class LuminPipeline:
         )
         for point in data_norm:
             self.origin.ingest(point)
-        self.origin.finalize()  # CRÍTICO: cerrar último sector
+        self.origin.finalize()  # CRITICAL: close the last sector
 
-        # Preparar resolución
+        # Prepare resolution
         sectors = self.origin.get_sectors()
         if len(sectors) == 0:
-            raise ValueError("No se generaron sectores. Revisar datos o epsilon.")
+            raise ValueError("No sectors were generated. Check data or epsilon.")
         self.resolution = LuminResolution(sectors, self.D)
 
         return self
 
     def predict(self, X):
         """
-        Predice Y para un array X (sin normalizar, valores originales).
-        X : array numpy de forma (N, D) o (D,).
+        Predicts Y for an array X (raw, unnormalized values).
+        X : numpy array of shape (N, D) or (D,).
         """
         X = np.atleast_2d(X)
-        # Normalizar X usando los parámetros del fit
-        # Necesitamos normalizar solo las columnas X, no Y
-        X_with_dummy_y = np.c_[X, np.zeros(X.shape[0])]
-        X_norm_full = self.normalizer.transform(X_with_dummy_y)
-        X_norm = X_norm_full[:, :-1]
 
-        # Resolver en espacio normalizado
+        # Input validation
+        if X.shape[1] != self.D:
+            raise ValueError(
+                f"X has {X.shape[1]} columns, expected {self.D}. "
+                f"Input must match the dimensionality used during fit()."
+            )
+
+        # Normalize X directly using dedicated transform_x
+        X_norm = self.normalizer.transform_x(X)
+
+        # Resolve in normalized space
         y_norm = self.resolution.resolve(X_norm)
 
-        # Desnormalizar Y
+        # Denormalize Y back to original scale
         return self.normalizer.inverse_transform_y(y_norm)
 
     @property
@@ -339,21 +402,21 @@ class LuminPipeline:
 
     def save(self, filename="lumin_model.npy"):
         """
-        Guarda el modelo en .npy.
-        Contiene todo lo que Resolution necesita para inferir:
-          - sectors      : array [min, max, W, B] por sector.
-          - s_min        : mínimos por columna (todas, incluyendo Y).
-          - s_max        : máximos por columna.
-          - s_range      : rango por columna.
-          - s_maxabs     : max(abs) por columna (solo si norm es symmetric_maxabs).
-          - norm_type    : tipo de normalización usado.
-          - D            : dimensionalidad de X.
-          - epsilon_val  : epsilon usado en origin.
-          - epsilon_type : tipo de epsilon.
-          - mode         : diversity o purity.
+        Saves the model to .npy.
+        Contains everything Resolution needs to infer:
+          - sectors      : array [min, max, W, B] per sector.
+          - s_min        : column minimums (all columns, including Y).
+          - s_max        : column maximums.
+          - s_range      : column ranges.
+          - s_maxabs     : max(abs) per column (only if symmetric_maxabs).
+          - norm_type    : normalization type used.
+          - D            : dimensionality of X.
+          - epsilon_val  : epsilon used in Origin.
+          - epsilon_type : epsilon type.
+          - mode         : diversity or purity.
         """
         if self.origin is None or self.resolution is None:
-            raise ValueError("El modelo no ha sido entrenado. Ejecuta fit() primero.")
+            raise ValueError("Model has not been trained. Run fit() first.")
 
         model_data = {
             'sectors':      np.array(self.origin.sectors),
@@ -366,6 +429,7 @@ class LuminPipeline:
             'epsilon_val':  self.epsilon_val,
             'epsilon_type': self.epsilon_type,
             'mode':         self.mode,
+            'sort_input':   self.sort_input,
         }
         np.save(filename, model_data)
         return filename
@@ -373,9 +437,9 @@ class LuminPipeline:
     @classmethod
     def load(cls, filename="lumin_model.npy"):
         """
-        Carga un modelo desde .npy y reconstruye el pipeline
-        listo para inferir con predict().
-        No necesita los datos originales ni Origin.
+        Loads a model from .npy and reconstructs the pipeline,
+        ready to infer with predict().
+        Does not need original data or Origin.
         """
         model_data = np.load(filename, allow_pickle=True).item()
 
@@ -384,16 +448,17 @@ class LuminPipeline:
             epsilon_type=model_data['epsilon_type'],
             mode=model_data['mode'],
             norm_type=model_data['norm_type'],
+            sort_input=model_data.get('sort_input', True),
         )
 
-        # Reconstruir normalizer
+        # Reconstruct normalizer
         pipeline.normalizer.s_min   = model_data['s_min']
         pipeline.normalizer.s_max   = model_data['s_max']
         pipeline.normalizer.s_range = model_data['s_range']
         if len(model_data['s_maxabs']) > 0:
             pipeline.normalizer.s_maxabs = model_data['s_maxabs']
 
-        # Reconstruir resolution directamente desde los sectores
+        # Reconstruct resolution directly from sectors
         pipeline.D = model_data['D']
         sectors = model_data['sectors']
         pipeline.resolution = LuminResolution(sectors, pipeline.D)
@@ -401,7 +466,7 @@ class LuminPipeline:
         return pipeline
 
     def get_metadata(self):
-        """Retorna metadatos del modelo entrenado."""
+        """Returns metadata of the trained model."""
         return {
             'n_sectors': self.n_sectors,
             'D': self.D,
@@ -409,5 +474,5 @@ class LuminPipeline:
             'epsilon_type': self.epsilon_type,
             'mode': self.mode,
             'norm_type': self.normalizer.norm_type,
+            'sort_input': self.sort_input,
         }
-      
