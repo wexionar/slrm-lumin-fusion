@@ -7,75 +7,75 @@
 # =============================================================
 
 """
-Tests para LuminCore Engine
-============================
-Verifican las dos condiciones innegociables:
+Lumin Fusion Engine — Test Suite
+=================================
+Validates the two non-negotiable conditions:
 
-  CONDICIÓN 1: Cualquier punto retenido en el modelo debe ser inferido
-               con precisión dentro de epsilon.
+  CONDITION 1: Any point retained in the model must be inferred
+               with precision within epsilon.
 
-  CONDICIÓN 2: Cualquier punto descartado durante la compresión también
-               debe ser inferido con precisión dentro de epsilon.
-               Y esto debe cumplirse sin importar el orden de entrada.
+  CONDITION 2: Any point discarded during compression must also
+               be inferred with precision within epsilon.
+               This must hold regardless of input order.
 
-Estructura de tests:
-  - test_condicion_1_*  : Verifican precisión en puntos retenidos.
-  - test_condicion_2_*  : Verifican precisión en puntos descartados.
-  - test_orden_*        : Verifican que ambas condiciones se cumplen
-                          con datos en diferentes ordenes.
-  - test_edge_*         : Casos límite importantes.
-  - test_normalizacion_*: Verifican que los tipos de normalización funcionan.
+Test structure:
+  - test_condition1_*      : Verify precision on retained points.
+  - test_condition2_*      : Verify precision on discarded points.
+  - test_order_*           : Verify both conditions hold across
+                             different input orderings.
+  - test_edge_*            : Important edge cases.
+  - test_normalization_*   : Verify all normalization types work.
 """
 
 import numpy as np
 from lumin_fusion import LuminPipeline
 
 # =============================================================
-# UTILIDADES DE TEST
+# TEST UTILITIES
 # =============================================================
-def generar_datos_lineales(N=1000, D=10, seed=42):
-    """Dataset donde Y es función lineal de X. Más fácil de comprimir."""
+def generate_linear_data(N=1000, D=10, seed=42):
+    """Dataset where Y is a linear function of X. Easier to compress."""
     rng = np.random.default_rng(seed)
     X = rng.uniform(-100, 100, (N, D))
-    W_real = rng.uniform(-2, 2, D)
-    Y = X @ W_real + 5.0  # sin ruido
+    W_true = rng.uniform(-2, 2, D)
+    Y = X @ W_true + 5.0  # no noise
     return np.c_[X, Y]
 
-def generar_datos_no_lineales(N=1000, D=10, seed=42):
-    """Dataset con componente no lineal. Requiere más sectores."""
+def generate_nonlinear_data(N=1000, D=10, seed=42):
+    """Dataset with nonlinear component. Requires more sectors."""
     rng = np.random.default_rng(seed)
     X = rng.uniform(-100, 100, (N, D))
     Y = np.sum(X**2, axis=1) / D + np.sum(X, axis=1) * 0.1
     return np.c_[X, Y]
 
-def generar_datos_con_ruido(N=1000, D=10, noise_level=1.0, seed=42):
-    """Dataset lineal con ruido gaussiano."""
+def generate_noisy_data(N=1000, D=10, noise_level=1.0, seed=42):
+    """Linear dataset with Gaussian noise."""
     rng = np.random.default_rng(seed)
     X = rng.uniform(-100, 100, (N, D))
-    W_real = rng.uniform(-2, 2, D)
-    Y = X @ W_real + 5.0 + rng.normal(0, noise_level, N)
+    W_true = rng.uniform(-2, 2, D)
+    Y = X @ W_true + 5.0 + rng.normal(0, noise_level, N)
     return np.c_[X, Y]
 
-def calcular_epsilon_real(y_real, y_pred, epsilon_val, epsilon_type):
-    """Calcula el umbral real según el tipo de epsilon."""
+def compute_epsilon_threshold(y_real, y_pred, epsilon_val, epsilon_type):
+    """Computes the actual threshold based on epsilon type."""
     if epsilon_type == 'relative':
         return np.abs(y_real) * epsilon_val
     return np.full_like(y_real, epsilon_val)
 
-def reportar(nombre, pasó, detalle=""):
-    estado = "✓ PASS" if pasó else "✗ FAIL"
-    print(f"  {estado} | {nombre}")
-    if not pasó and detalle:
-        print(f"         → {detalle}")
-    return pasó
+def report(name, passed, detail=""):
+    status = "✓ PASS" if passed else "✗ FAIL"
+    print(f"  {status} | {name}")
+    if not passed and detail:
+        print(f"         → {detail}")
+    return passed
 
 
 # =============================================================
-# CONDICIÓN 1: Precisión en puntos retenidos (training data)
+# CONDITION 1: Precision on retained points (training data)
 # =============================================================
-def test_condicion1_datos_lineales():
-    """Datos lineales simples deben inferirse dentro de epsilon."""
-    data = generar_datos_lineales(N=2000, D=10)
+def test_condition1_linear_data():
+    """Simple linear data must be inferred within epsilon."""
+    data = generate_linear_data(N=2000, D=10)
     eps = 0.05
 
     pipeline = LuminPipeline(epsilon_val=eps, epsilon_type='absolute', mode='diversity')
@@ -83,18 +83,17 @@ def test_condicion1_datos_lineales():
 
     X, Y_real = data[:, :-1], data[:, -1]
     Y_pred = pipeline.predict(X)
-    errores = np.abs(Y_real - Y_pred)
-    max_error = np.max(errores)
-    # En datos lineales, el error máximo debería estar muy cerca de epsilon
-    # (no necesariamente menor, por la desnormalización y solapamiento)
-    # Usamos un margen más flexible: 2x epsilon como sanidad
-    pasó = max_error < eps * 50  # margen amplio para datos lineales
-    return reportar("C1 - Datos lineales", pasó,
-                    f"max_error={max_error:.6f}, eps={eps}, sectors={pipeline.n_sectors}")
+    errors = np.abs(Y_real - Y_pred)
+    max_error = np.max(errors)
+    # For linear data, max error should stay close to epsilon.
+    # We use a broad sanity margin due to denormalization and overlap effects.
+    passed = max_error < eps * 50
+    return report("C1 - Linear data", passed,
+                  f"max_error={max_error:.6f}, eps={eps}, sectors={pipeline.n_sectors}")
 
-def test_condicion1_datos_no_lineales():
-    """Datos no lineales deben inferirse razonablemente."""
-    data = generar_datos_no_lineales(N=2000, D=5)
+def test_condition1_nonlinear_data():
+    """Nonlinear data must be inferred reasonably, generating multiple sectors."""
+    data = generate_nonlinear_data(N=2000, D=5)
     eps = 0.05
 
     pipeline = LuminPipeline(epsilon_val=eps, epsilon_type='absolute', mode='diversity')
@@ -102,44 +101,43 @@ def test_condicion1_datos_no_lineales():
 
     X, Y_real = data[:, :-1], data[:, -1]
     Y_pred = pipeline.predict(X)
-    errores = np.abs(Y_real - Y_pred)
-    mae = np.mean(errores)
-    pasó = pipeline.n_sectors > 1  # debe generar múltiples sectores
-    return reportar("C1 - Datos no lineales",  pasó,
-                    f"MAE={mae:.4f}, sectors={pipeline.n_sectors}")
+    errors = np.abs(Y_real - Y_pred)
+    mae = np.mean(errors)
+    passed = pipeline.n_sectors > 1  # must generate multiple sectors
+    return report("C1 - Nonlinear data", passed,
+                  f"MAE={mae:.4f}, sectors={pipeline.n_sectors}")
 
-def test_condicion1_epsilon_relativo():
-    """Epsilon relativo debe funcionar correctamente."""
-    data = generar_datos_lineales(N=1000, D=5)
-    eps = 0.05  # 5% relativo
+def test_condition1_relative_epsilon():
+    """Relative epsilon must work correctly."""
+    data = generate_linear_data(N=1000, D=5)
+    eps = 0.05  # 5% relative
 
     pipeline = LuminPipeline(epsilon_val=eps, epsilon_type='relative', mode='diversity')
     pipeline.fit(data)
 
     X, Y_real = data[:, :-1], data[:, -1]
     Y_pred = pipeline.predict(X)
-    pasó = pipeline.n_sectors > 0
-    return reportar("C1 - Epsilon relativo", pasó,
-                    f"sectors={pipeline.n_sectors}")
+    passed = pipeline.n_sectors > 0
+    return report("C1 - Relative epsilon", passed,
+                  f"sectors={pipeline.n_sectors}")
 
 
 # =============================================================
-# CONDICIÓN 2: Precisión independiente del orden
+# CONDITION 2: Precision regardless of input order
 # =============================================================
-def test_condicion2_mismo_resultado_diferente_orden():
+def test_condition2_stable_inference_across_orders():
     """
-    El motor puede generar modelos diferentes según el orden,
-    pero AMBOS modelos deben poder inferir los mismos puntos
-    con precisión razonable.
+    The engine may produce different models depending on input order,
+    but BOTH models must infer the same points with reasonable precision.
     """
-    data = generar_datos_lineales(N=1000, D=5, seed=7)
+    data = generate_linear_data(N=1000, D=5, seed=7)
     eps = 0.05
 
-    # Orden original
+    # Original order
     pipeline_a = LuminPipeline(epsilon_val=eps, epsilon_type='absolute', mode='diversity')
     pipeline_a.fit(data)
 
-    # Orden shuffleado
+    # Shuffled order
     rng = np.random.default_rng(99)
     indices = rng.permutation(len(data))
     data_shuffled = data[indices]
@@ -147,7 +145,7 @@ def test_condicion2_mismo_resultado_diferente_orden():
     pipeline_b = LuminPipeline(epsilon_val=eps, epsilon_type='absolute', mode='diversity')
     pipeline_b.fit(data_shuffled)
 
-    # Ambos deben inferir los mismos puntos originales
+    # Both must infer the original points
     X = data[:, :-1]
     Y_real = data[:, -1]
 
@@ -157,17 +155,17 @@ def test_condicion2_mismo_resultado_diferente_orden():
     mae_a = np.mean(np.abs(Y_real - Y_pred_a))
     mae_b = np.mean(np.abs(Y_real - Y_pred_b))
 
-    # Ambos MAE deben estar en un rango razonable (no uno mucho peor que otro)
+    # Both MAEs must be in a reasonable range (neither 10x worse than the other)
     ratio = max(mae_a, mae_b) / (min(mae_a, mae_b) + 1e-12)
-    pasó = ratio < 10  # ninguno debe ser 10x peor que el otro
-    return reportar("C2 - Inferencia estable entre ordenes", pasó,
-                    f"MAE_original={mae_a:.6f}, MAE_shuffled={mae_b:.6f}, "
-                    f"ratio={ratio:.2f}, sectores A={pipeline_a.n_sectors}, B={pipeline_b.n_sectors}")
+    passed = ratio < 10
+    return report("C2 - Stable inference across orders", passed,
+                  f"MAE_original={mae_a:.6f}, MAE_shuffled={mae_b:.6f}, "
+                  f"ratio={ratio:.2f}, sectors A={pipeline_a.n_sectors}, B={pipeline_b.n_sectors}")
 
-def test_condicion2_puntos_no_vistos():
-    """Puntos que nunca fueron parte del training deben inferirse."""
+def test_condition2_unseen_points():
+    """Points never seen during training must be inferred without NaN."""
     rng = np.random.default_rng(42)
-    # Entrenar con un subset
+    # Train on a subset
     X_train = rng.uniform(-50, 50, (1000, 5))
     W = np.array([1.0, -0.5, 2.0, 0.3, -1.2])
     Y_train = X_train @ W + 3.0
@@ -176,7 +174,7 @@ def test_condicion2_puntos_no_vistos():
     pipeline = LuminPipeline(epsilon_val=0.05, epsilon_type='absolute', mode='diversity')
     pipeline.fit(data_train)
 
-    # Generar puntos nuevos DENTRO del mismo rango
+    # Generate new points WITHIN the same range
     X_test = rng.uniform(-50, 50, (500, 5))
     Y_test_real = X_test @ W + 3.0
     Y_test_pred = pipeline.predict(X_test)
@@ -184,18 +182,18 @@ def test_condicion2_puntos_no_vistos():
     mae = np.mean(np.abs(Y_test_real - Y_test_pred))
     nan_count = np.sum(np.isnan(Y_test_pred))
 
-    pasó = nan_count == 0  # NINGÚN punto debe retornar NaN
-    return reportar("C2 - Puntos no vistos sin NaN", pasó,
-                    f"NaN={nan_count}/500, MAE={mae:.4f}, sectors={pipeline.n_sectors}")
+    passed = nan_count == 0  # NO point should return NaN
+    return report("C2 - Unseen points without NaN", passed,
+                  f"NaN={nan_count}/500, MAE={mae:.4f}, sectors={pipeline.n_sectors}")
 
-def test_condicion2_puntos_fuera_de_rango():
-    """Puntos fuera del rango de entrenamiento no deben retornar NaN (fallback)."""
-    data = generar_datos_lineales(N=1000, D=5, seed=10)
+def test_condition2_out_of_range_points():
+    """Points outside the training range must not return NaN (fallback must work)."""
+    data = generate_linear_data(N=1000, D=5, seed=10)
 
     pipeline = LuminPipeline(epsilon_val=0.05, epsilon_type='absolute', mode='diversity')
     pipeline.fit(data)
 
-    # Puntos fuera del rango original
+    # Points outside the original range
     X_out = np.array([
         [500, 500, 500, 500, 500],
         [-500, -500, -500, -500, -500],
@@ -205,23 +203,23 @@ def test_condicion2_puntos_fuera_de_rango():
     Y_pred = pipeline.predict(X_out)
     nan_count = np.sum(np.isnan(Y_pred))
 
-    pasó = nan_count == 0  # Fallback debe funcionar, no NaN
-    return reportar("C2 - Puntos fuera de rango sin NaN", pasó,
-                    f"NaN={nan_count}/3, predicciones={Y_pred}")
+    passed = nan_count == 0  # Fallback must activate, no NaN
+    return report("C2 - Out-of-range points without NaN", passed,
+                  f"NaN={nan_count}/3, predictions={Y_pred}")
 
 
 # =============================================================
-# TESTS DE ORDEN (múltiples permutaciones)
+# ORDER STABILITY (multiple permutations)
 # =============================================================
-def test_orden_multiples_permutaciones():
+def test_order_multiple_permutations():
     """
-    Entrena el mismo dataset en 5 ordenes diferentes.
-    Todos deben inferir los datos originales sin NaN.
+    Trains the same dataset in 5 different orders.
+    All must infer original data without NaN.
     """
-    data = generar_datos_no_lineales(N=500, D=5, seed=33)
+    data = generate_nonlinear_data(N=500, D=5, seed=33)
     X, Y_real = data[:, :-1], data[:, -1]
     eps = 0.1
-    nan_totales = 0
+    total_nans = 0
     maes = []
 
     for i in range(5):
@@ -232,68 +230,125 @@ def test_orden_multiples_permutaciones():
         pipeline.fit(data_perm)
 
         Y_pred = pipeline.predict(X)
-        nan_totales += np.sum(np.isnan(Y_pred))
+        total_nans += np.sum(np.isnan(Y_pred))
         maes.append(np.mean(np.abs(Y_real - Y_pred)))
 
-    pasó = nan_totales == 0
-    return reportar("ORDEN - 5 permutaciones sin NaN", pasó,
-                    f"NaN totales={nan_totales}, MAEs={[f'{m:.4f}' for m in maes]}")
+    passed = total_nans == 0
+    return report("ORDER - 5 permutations without NaN", passed,
+                  f"total NaN={total_nans}, MAEs={[f'{m:.4f}' for m in maes]}")
+
+def test_order_sort_input_reproducibility():
+    """
+    With sort_input=True, the same dataset fed in different orders must
+    produce exactly the same sectors and identical predictions.
+    """
+    data = generate_linear_data(N=1000, D=5, seed=42)
+
+    # Original order
+    pipeline_a = LuminPipeline(epsilon_val=0.05, sort_input=True)
+    pipeline_a.fit(data)
+
+    # Shuffled order
+    rng = np.random.default_rng(123)
+    data_shuffled = data[rng.permutation(len(data))]
+
+    pipeline_b = LuminPipeline(epsilon_val=0.05, sort_input=True)
+    pipeline_b.fit(data_shuffled)
+
+    # Both must produce identical sectors and predictions
+    X = data[:, :-1]
+    Y_pred_a = pipeline_a.predict(X)
+    Y_pred_b = pipeline_b.predict(X)
+
+    same_sectors = pipeline_a.n_sectors == pipeline_b.n_sectors
+    same_predictions = np.allclose(Y_pred_a, Y_pred_b)
+    passed = same_sectors and same_predictions
+    return report("ORDER - sort_input=True reproducibility", passed,
+                  f"sectors A={pipeline_a.n_sectors}, B={pipeline_b.n_sectors}, "
+                  f"predictions identical={same_predictions}")
+
+def test_order_sort_input_false_diversity():
+    """
+    With sort_input=False, different input orders may produce different
+    sector counts. Both must still infer without NaN.
+    """
+    data = generate_nonlinear_data(N=500, D=5, seed=55)
+
+    pipeline_a = LuminPipeline(epsilon_val=0.05, sort_input=False)
+    pipeline_a.fit(data)
+
+    rng = np.random.default_rng(77)
+    data_shuffled = data[rng.permutation(len(data))]
+
+    pipeline_b = LuminPipeline(epsilon_val=0.05, sort_input=False)
+    pipeline_b.fit(data_shuffled)
+
+    X = data[:, :-1]
+    Y_pred_a = pipeline_a.predict(X)
+    Y_pred_b = pipeline_b.predict(X)
+
+    nan_a = np.sum(np.isnan(Y_pred_a))
+    nan_b = np.sum(np.isnan(Y_pred_b))
+    passed = nan_a == 0 and nan_b == 0
+    return report("ORDER - sort_input=False diversity", passed,
+                  f"sectors A={pipeline_a.n_sectors}, B={pipeline_b.n_sectors}, "
+                  f"NaN A={nan_a}, NaN B={nan_b}")
 
 
 # =============================================================
-# TESTS DE NORMALIZACIÓN
+# NORMALIZATION TESTS
 # =============================================================
-def test_normalizacion_symmetric_minmax():
-    """Normalización simétrica min-max debe funcionar."""
-    data = generar_datos_lineales(N=500, D=5)
+def test_normalization_symmetric_minmax():
+    """Symmetric min-max normalization must work."""
+    data = generate_linear_data(N=500, D=5)
     pipeline = LuminPipeline(norm_type='symmetric_minmax', epsilon_val=0.05)
     pipeline.fit(data)
     Y_pred = pipeline.predict(data[:, :-1])
-    pasó = not np.any(np.isnan(Y_pred)) and pipeline.n_sectors > 0
-    return reportar("NORM - symmetric_minmax", pasó, f"sectors={pipeline.n_sectors}")
+    passed = not np.any(np.isnan(Y_pred)) and pipeline.n_sectors > 0
+    return report("NORM - symmetric_minmax", passed, f"sectors={pipeline.n_sectors}")
 
-def test_normalizacion_symmetric_maxabs():
-    """Normalización simétrica max-abs debe funcionar."""
-    data = generar_datos_lineales(N=500, D=5)
+def test_normalization_symmetric_maxabs():
+    """Symmetric max-abs normalization must work."""
+    data = generate_linear_data(N=500, D=5)
     pipeline = LuminPipeline(norm_type='symmetric_maxabs', epsilon_val=0.05)
     pipeline.fit(data)
     Y_pred = pipeline.predict(data[:, :-1])
-    pasó = not np.any(np.isnan(Y_pred)) and pipeline.n_sectors > 0
-    return reportar("NORM - symmetric_maxabs", pasó, f"sectors={pipeline.n_sectors}")
+    passed = not np.any(np.isnan(Y_pred)) and pipeline.n_sectors > 0
+    return report("NORM - symmetric_maxabs", passed, f"sectors={pipeline.n_sectors}")
 
-def test_normalizacion_direct():
-    """Normalización directa [0,1] debe funcionar."""
-    data = generar_datos_lineales(N=500, D=5)
+def test_normalization_direct():
+    """Direct [0,1] normalization must work."""
+    data = generate_linear_data(N=500, D=5)
     pipeline = LuminPipeline(norm_type='direct', epsilon_val=0.05)
     pipeline.fit(data)
     Y_pred = pipeline.predict(data[:, :-1])
-    pasó = not np.any(np.isnan(Y_pred)) and pipeline.n_sectors > 0
-    return reportar("NORM - direct", pasó, f"sectors={pipeline.n_sectors}")
+    passed = not np.any(np.isnan(Y_pred)) and pipeline.n_sectors > 0
+    return report("NORM - direct", passed, f"sectors={pipeline.n_sectors}")
 
 
 # =============================================================
-# TESTS EDGE CASES
+# EDGE CASES
 # =============================================================
-def test_edge_datos_perfectamente_lineales():
+def test_edge_perfectly_linear_data():
     """
-    Si los datos son perfectamente lineales, debe generar al menos 1 sector
-    (no quedarse vacío).
+    If data is perfectly linear, must generate at least 1 sector
+    (not end up empty).
     """
     rng = np.random.default_rng(42)
     X = rng.uniform(0, 100, (500, 3))
-    Y = 2*X[:, 0] - 3*X[:, 1] + X[:, 2] + 7.0  # perfectamente lineal
+    Y = 2*X[:, 0] - 3*X[:, 1] + X[:, 2] + 7.0  # perfectly linear
     data = np.c_[X, Y]
 
     pipeline = LuminPipeline(epsilon_val=0.05, epsilon_type='absolute', mode='diversity')
     pipeline.fit(data)
 
-    pasó = pipeline.n_sectors >= 1
-    return reportar("EDGE - Datos perfectamente lineales", pasó,
-                    f"sectors={pipeline.n_sectors}")
+    passed = pipeline.n_sectors >= 1
+    return report("EDGE - Perfectly linear data", passed,
+                  f"sectors={pipeline.n_sectors}")
 
-def test_edge_modo_purity_vs_diversity():
-    """Purity debe generar igual o menos sectores que Diversity en datos con ruido."""
-    data = generar_datos_con_ruido(N=1000, D=5, noise_level=5.0, seed=55)
+def test_edge_purity_vs_diversity():
+    """Both modes must infer training data without NaN on noisy datasets."""
+    data = generate_noisy_data(N=1000, D=5, noise_level=5.0, seed=55)
 
     p_div = LuminPipeline(epsilon_val=0.1, mode='diversity')
     p_div.fit(data)
@@ -301,20 +356,20 @@ def test_edge_modo_purity_vs_diversity():
     p_pur = LuminPipeline(epsilon_val=0.1, mode='purity')
     p_pur.fit(data)
 
-    # Ambos no deben retornar NaN en los datos originales
+    # Neither mode should return NaN on training data
     Y_div = p_div.predict(data[:, :-1])
     Y_pur = p_pur.predict(data[:, :-1])
     nan_div = np.sum(np.isnan(Y_div))
     nan_pur = np.sum(np.isnan(Y_pur))
 
-    pasó = nan_div == 0 and nan_pur == 0
-    return reportar("EDGE - Diversity vs Purity sin NaN", pasó,
-                    f"Diversity: {p_div.n_sectors} sectores, NaN={nan_div} | "
-                    f"Purity: {p_pur.n_sectors} sectores, NaN={nan_pur}")
+    passed = nan_div == 0 and nan_pur == 0
+    return report("EDGE - Diversity vs Purity without NaN", passed,
+                  f"Diversity: {p_div.n_sectors} sectors, NaN={nan_div} | "
+                  f"Purity: {p_pur.n_sectors} sectors, NaN={nan_pur}")
 
-def test_edge_alta_dimensionalidad():
-    """Test en 50D para verificar que no se rompe en alta dimensionalidad."""
-    data = generar_datos_lineales(N=2000, D=50, seed=88)
+def test_edge_high_dimensionality():
+    """Test in 50D to verify the engine does not break in high dimensions."""
+    data = generate_linear_data(N=2000, D=50, seed=88)
 
     pipeline = LuminPipeline(epsilon_val=0.05, epsilon_type='absolute', mode='diversity')
     pipeline.fit(data)
@@ -322,46 +377,46 @@ def test_edge_alta_dimensionalidad():
     Y_pred = pipeline.predict(data[:, :-1])
     nan_count = np.sum(np.isnan(Y_pred))
 
-    pasó = nan_count == 0 and pipeline.n_sectors > 0
-    return reportar("EDGE - Alta dimensionalidad (50D)", pasó,
-                    f"NaN={nan_count}, sectors={pipeline.n_sectors}")
+    passed = nan_count == 0 and pipeline.n_sectors > 0
+    return report("EDGE - High dimensionality (50D)", passed,
+                  f"NaN={nan_count}, sectors={pipeline.n_sectors}")
 
 def test_edge_save_load_cycle():
     """
-    Ciclo completo: fit → save → load → predict.
-    Los resultados deben ser idénticos antes y después de guardar/cargar.
+    Full cycle: fit → save → load → predict.
+    Results must be identical before and after save/load.
     """
     import tempfile, os
 
-    data = generar_datos_no_lineales(N=500, D=5, seed=77)
+    data = generate_nonlinear_data(N=500, D=5, seed=77)
 
-    # Entrenar y predecir
+    # Train and predict
     pipeline_a = LuminPipeline(epsilon_val=0.05, epsilon_type='absolute', mode='diversity')
     pipeline_a.fit(data)
     Y_pred_a = pipeline_a.predict(data[:, :-1])
 
-    # Guardar
+    # Save
     tmp = tempfile.NamedTemporaryFile(suffix='.npy', delete=False)
     tmp.close()
     pipeline_a.save(tmp.name)
 
-    # Cargar y predecir
+    # Load and predict
     pipeline_b = LuminPipeline.load(tmp.name)
     Y_pred_b = pipeline_b.predict(data[:, :-1])
 
-    # Limpiar archivo temporal
+    # Cleanup
     os.unlink(tmp.name)
 
-    # Resultados deben ser exactamente iguales
+    # Results must be exactly equal
     identical = np.allclose(Y_pred_a, Y_pred_b, equal_nan=True)
-    pasó = identical
+    passed = identical
     max_diff = np.max(np.abs(Y_pred_a - Y_pred_b)) if not identical else 0.0
-    return reportar("EDGE - Save/Load ciclo completo", pasó,
-                    f"max_diff={max_diff:.10f}, sectors={pipeline_a.n_sectors}")
+    return report("EDGE - Save/Load full cycle", passed,
+                  f"max_diff={max_diff:.10f}, sectors={pipeline_a.n_sectors}")
 
-def test_edge_epsilon_muy_bajo():
-    """Epsilon muy bajo (0.001) debe generar más sectores pero sin NaN."""
-    data = generar_datos_no_lineales(N=500, D=5, seed=12)
+def test_edge_very_low_epsilon():
+    """Very low epsilon (0.001) must generate more sectors but no NaN."""
+    data = generate_nonlinear_data(N=500, D=5, seed=12)
 
     pipeline = LuminPipeline(epsilon_val=0.001, epsilon_type='absolute', mode='diversity')
     pipeline.fit(data)
@@ -369,9 +424,9 @@ def test_edge_epsilon_muy_bajo():
     Y_pred = pipeline.predict(data[:, :-1])
     nan_count = np.sum(np.isnan(Y_pred))
 
-    pasó = nan_count == 0
-    return reportar("EDGE - Epsilon muy bajo (0.001)", pasó,
-                    f"NaN={nan_count}, sectors={pipeline.n_sectors}")
+    passed = nan_count == 0
+    return report("EDGE - Very low epsilon (0.001)", passed,
+                  f"NaN={nan_count}, sectors={pipeline.n_sectors}")
 
 
 # =============================================================
@@ -379,47 +434,48 @@ def test_edge_epsilon_muy_bajo():
 # =============================================================
 def run_all_tests():
     print("\n" + "="*55)
-    print("  LUMIN CORE - TEST SUITE")
+    print("  LUMIN FUSION - TEST SUITE")
     print("="*55)
 
-    resultados = []
+    results = []
 
-    print("\n── CONDICIÓN 1: Precisión en datos de entrenamiento ──")
-    resultados.append(test_condicion1_datos_lineales())
-    resultados.append(test_condicion1_datos_no_lineales())
-    resultados.append(test_condicion1_epsilon_relativo())
+    print("\n── CONDITION 1: Precision on training data ───────────")
+    results.append(test_condition1_linear_data())
+    results.append(test_condition1_nonlinear_data())
+    results.append(test_condition1_relative_epsilon())
 
-    print("\n── CONDICIÓN 2: Precisión independiente del orden ───")
-    resultados.append(test_condicion2_mismo_resultado_diferente_orden())
-    resultados.append(test_condicion2_puntos_no_vistos())
-    resultados.append(test_condicion2_puntos_fuera_de_rango())
+    print("\n── CONDITION 2: Precision regardless of order ────────")
+    results.append(test_condition2_stable_inference_across_orders())
+    results.append(test_condition2_unseen_points())
+    results.append(test_condition2_out_of_range_points())
 
-    print("\n── ESTABILIDAD EN MÚLTIPLES ORDENES ─────────────────")
-    resultados.append(test_orden_multiples_permutaciones())
+    print("\n── ORDER STABILITY ───────────────────────────────────")
+    results.append(test_order_multiple_permutations())
+    results.append(test_order_sort_input_reproducibility())
+    results.append(test_order_sort_input_false_diversity())
 
-    print("\n── TIPOS DE NORMALIZACIÓN ────────────────────────────")
-    resultados.append(test_normalizacion_symmetric_minmax())
-    resultados.append(test_normalizacion_symmetric_maxabs())
-    resultados.append(test_normalizacion_direct())
+    print("\n── NORMALIZATION TYPES ───────────────────────────────")
+    results.append(test_normalization_symmetric_minmax())
+    results.append(test_normalization_symmetric_maxabs())
+    results.append(test_normalization_direct())
 
-    print("\n── CASOS LÍMITE ──────────────────────────────────────")
-    resultados.append(test_edge_datos_perfectamente_lineales())
-    resultados.append(test_edge_modo_purity_vs_diversity())
-    resultados.append(test_edge_alta_dimensionalidad())
-    resultados.append(test_edge_save_load_cycle())
-    resultados.append(test_edge_epsilon_muy_bajo())
+    print("\n── EDGE CASES ────────────────────────────────────────")
+    results.append(test_edge_perfectly_linear_data())
+    results.append(test_edge_purity_vs_diversity())
+    results.append(test_edge_high_dimensionality())
+    results.append(test_edge_save_load_cycle())
+    results.append(test_edge_very_low_epsilon())
 
-    total = len(resultados)
-    pasados = sum(resultados)
-    fallidos = total - pasados
+    total = len(results)
+    passed = sum(results)
+    failed = total - passed
 
     print("\n" + "="*55)
-    print(f"  RESULTADO: {pasados}/{total} pasados | {fallidos} fallidos")
+    print(f"  RESULT: {passed}/{total} passed | {failed} failed")
     print("="*55 + "\n")
 
-    return fallidos == 0
+    return failed == 0
 
 
 if __name__ == "__main__":
     run_all_tests()
-  
