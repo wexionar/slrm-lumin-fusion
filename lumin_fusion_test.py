@@ -56,12 +56,6 @@ def generate_noisy_data(N=1000, D=10, noise_level=1.0, seed=42):
     Y = X @ W_true + 5.0 + rng.normal(0, noise_level, N)
     return np.c_[X, Y]
 
-def compute_epsilon_threshold(y_real, y_pred, epsilon_val, epsilon_type):
-    """Computes the actual threshold based on epsilon type."""
-    if epsilon_type == 'relative':
-        return np.abs(y_real) * epsilon_val
-    return np.full_like(y_real, epsilon_val)
-
 def report(name, passed, detail=""):
     status = "✓ PASS" if passed else "✗ FAIL"
     print(f"  {status} | {name}")
@@ -479,3 +473,4 @@ def run_all_tests():
 
 if __name__ == "__main__":
     run_all_tests()
+  
